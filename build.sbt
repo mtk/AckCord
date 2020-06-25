@@ -8,7 +8,7 @@ lazy val circeVersion    = "0.13.0"
 lazy val ackCordVersion  = "0.16.1"
 
 lazy val commonSettings = Seq(
-  scalaVersion := "2.13.2",
+  scalaVersion := "2.13.3",
   crossScalaVersions := Seq("2.12.10", scalaVersion.value),
   organization := "net.katsstuff",
   scalacOptions ++= Seq(
