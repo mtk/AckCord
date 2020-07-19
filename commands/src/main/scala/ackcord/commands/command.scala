@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 package ackcord.commands
 
 import akka.stream.scaladsl.Flow
@@ -32,11 +31,13 @@ import akka.stream.scaladsl.Flow
   * @tparam A The argument type of the command
   * @tparam Mat The materialized result of creating this command
   */
-trait ComplexCommand[A, Mat] {
+case class ComplexCommand[A, Mat](parser: MessageParser[A], flow: Flow[CommandMessage[A], CommandError, Mat]) {
 
-  def parser: MessageParser[A]
-
-  def flow: Flow[CommandMessage[A], CommandError, Mat]
+  /**
+    * Converts this command into a named command.
+    * @param Parser The prefix parser to use
+    */
+  def toNamed(Parser: StructuredPrefixParser): NamedComplexCommand[A, Mat] = NamedComplexCommand(this, Parser)
 }
 
 /**
@@ -45,28 +46,10 @@ trait ComplexCommand[A, Mat] {
   * @tparam A The argument type of the command
   * @tparam Mat The materialized result of creating this command
   */
-trait NamedComplexCommand[A, Mat] extends ComplexCommand[A, Mat] {
-
-  /**
-    * The prefix symbol to use for this command.
-    */
-  def symbol: String
-
-  /**
-    * The valid aliases of this command.
-    */
-  def aliases: Seq[String]
-
-  /**
-    * If this command requires a mention when invoking it.
-    */
-  def requiresMention: Boolean
-
-  /**
-    * If the aliases of this command should be matched with case sensitivity.
-    */
-  def caseSensitive: Boolean
-}
+case class NamedComplexCommand[A, Mat](
+    command: ComplexCommand[A, Mat],
+    prefixParser: StructuredPrefixParser
+)
 
 /**
   * Represents non essential information about a command intended to be

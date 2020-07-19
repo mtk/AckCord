@@ -23,20 +23,21 @@
  */
 package ackcord.gateway
 
+import java.util.concurrent.ThreadLocalRandom
+
 import scala.concurrent.duration._
 import scala.concurrent.{Future, Promise}
 
-import ackcord.gateway.GatewayHandlerGraphStage.Restart
 import ackcord.gateway.GatewayProtocol._
 import ackcord.util.AckCordGatewaySettings
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
-import akka.event.Logging
+import akka.event.{Logging, LoggingAdapter}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.Uri
 import akka.http.scaladsl.model.ws.{BinaryMessage, Message, TextMessage, WebSocketUpgradeResponse}
 import akka.stream._
-import akka.stream.scaladsl.{Compression, Flow, GraphDSL, Keep, Merge}
+import akka.stream.scaladsl.{Broadcast, Compression, Flow, GraphDSL, Keep, Merge, Partition}
 import akka.stream.stage._
 import akka.util.ByteString
 import cats.syntax.all._
@@ -46,58 +47,55 @@ import io.circe.syntax._
 
 class GatewayHandlerGraphStage(settings: GatewaySettings, prevResume: Option[ResumeData])
     extends GraphStageWithMaterializedValue[
-      FanOutShape2[GatewayMessage[_], GatewayMessage[_], GatewayMessage[_]],
-      Future[
-        Option[ResumeData]
-      ]
+      FlowShape[GatewayMessage[_], GatewayMessage[_]],
+      (Future[(Option[ResumeData], Boolean)], Future[Unit])
     ] {
-  val in: Inlet[GatewayMessage[_]]           = Inlet("GatewayHandlerGraphStage.in")
-  val dispatchOut: Outlet[GatewayMessage[_]] = Outlet("GatewayHandlerGraphStage.dispatchOut")
-
+  val in: Inlet[GatewayMessage[_]]   = Inlet("GatewayHandlerGraphStage.in")
   val out: Outlet[GatewayMessage[_]] = Outlet("GatewayHandlerGraphStage.out")
 
-  override def shape: FanOutShape2[GatewayMessage[_], GatewayMessage[_], GatewayMessage[_]] =
-    new FanOutShape2(in, out, dispatchOut)
+  override def shape: FlowShape[GatewayMessage[_], GatewayMessage[_]] =
+    new FlowShape(in, out)
 
   override def createLogicAndMaterializedValue(
       inheritedAttributes: Attributes
-  ): (GraphStageLogic, Future[Option[ResumeData]]) = {
-    val promise = Promise[Option[ResumeData]]
+  ): (GraphStageLogic, (Future[(Option[ResumeData], Boolean)], Future[Unit])) = {
+    val resumePromise          = Promise[(Option[ResumeData], Boolean)]
+    val successullStartPromise = Promise[Unit]
 
     val logic = new TimerGraphStageLogicWithLogging(shape) with InHandler with OutHandler {
       var resume: ResumeData = prevResume.orNull
       var receivedAck        = false
-      var restarting         = false
 
-      val HeartbeatTimerKey: String                    = "HeartbeatTimer"
-      def restartTimerKey(resumable: Boolean): Restart = Restart(resumable)
+      val HeartbeatTimerKey: String  = "HeartbeatTimer"
+      val ReidentifyTimerKey: String = "ReidentifyTimer"
 
-      def restart(resumable: Boolean, time: FiniteDuration): Unit = {
-        complete(out)
-        restarting = true
-        scheduleOnce(restartTimerKey(resumable), time)
+      def restart(resumable: Boolean, waitBeforeRestart: Boolean): Unit = {
+        resumePromise.success(if (resumable) (Some(resume), waitBeforeRestart) else (None, waitBeforeRestart))
+        completeStage()
+      }
+
+      def identify(): Unit = {
+        val message =
+          if (resume != null) Resume(resume)
+          else
+            Identify(
+              IdentifyData(
+                token = settings.token,
+                properties = IdentifyData.createProperties,
+                compress = settings.compress == Compress.PerMessageCompress,
+                largeThreshold = settings.largeThreshold,
+                shard = Seq(settings.shardNum, settings.shardTotal),
+                presence = StatusData(settings.idleSince, settings.activity, settings.status, afk = settings.afk),
+                guildSubscriptions = settings.guildSubscriptions,
+                intents = settings.intents
+              )
+            )
+
+        push(out, message)
       }
 
       def handleHello(data: HelloData): Unit = {
-        val response = prevResume match {
-          case Some(resumeData) => Resume(resumeData)
-          case None =>
-            val identifyObject = IdentifyData(
-              token = settings.token,
-              properties = IdentifyData.createProperties,
-              compress = true,
-              largeThreshold = settings.largeThreshold,
-              shard = Seq(settings.shardNum, settings.shardTotal),
-              presence = StatusData(settings.idleSince, settings.activity, settings.status, afk = settings.afk),
-              guildSubscriptions = settings.guildSubscriptions,
-              intents = settings.intents
-            )
-
-            Identify(identifyObject)
-        }
-
-        push(out, response)
-
+        identify()
         receivedAck = true
         scheduleAtFixedRate(HeartbeatTimerKey, 0.millis, data.heartbeatInterval.millis)
       }
@@ -107,7 +105,13 @@ class GatewayHandlerGraphStage(settings: GatewaySettings, prevResume: Option[Res
 
         event match {
           case Hello(data) => handleHello(data)
-          case dispatch @ Dispatch(seq, event) =>
+          case Dispatch(seq, event) =>
+            event match {
+              case GatewayEvent.Ready(_, _) | GatewayEvent.Resumed(_) =>
+                successullStartPromise.trySuccess(())
+              case _ =>
+            }
+
             resume = event match {
               case GatewayEvent.Ready(_, readyData) =>
                 readyData.value match {
@@ -127,30 +131,40 @@ class GatewayHandlerGraphStage(settings: GatewaySettings, prevResume: Option[Res
           case HeartbeatACK =>
             log.debug("Received HeartbeatACK")
             receivedAck = true
-          case Reconnect                 => restart(resumable = true, 0.millis)
-          case InvalidSession(resumable) => restart(resumable, 5.seconds)
-          case _                         => //Ignore
+          case Reconnect =>
+            log.debug("Restarting connection because of reconnect")
+            restart(resumable = true, waitBeforeRestart = false)
+          case InvalidSession(resumable) =>
+            log.debug(s"Restarting connection because of invalid session. Resumable: $resumable")
+            if (!resumable) {
+              resume = null
+            }
+
+            scheduleOnce(ReidentifyTimerKey, ThreadLocalRandom.current().nextDouble(1, 5).seconds)
+          case _ => //Ignore
         }
 
-        emit(dispatchOut, event)
-
-        if (!hasBeenPulled(in)) pull(in)
+        if (!hasBeenPulled(in) && !isClosed(in)) pull(in)
       }
 
       override def onUpstreamFinish(): Unit = {
-        if (!restarting) {
-          if (!promise.isCompleted) {
-            promise.success(Option(resume))
-          }
-
-          super.onUpstreamFinish()
+        if (!resumePromise.isCompleted) {
+          resumePromise.trySuccess((Option(resume), false))
         }
+
+        super.onUpstreamFinish()
       }
 
       override def onUpstreamFailure(ex: Throwable): Unit = {
-        promise.failure(ex)
-        println("UpFailure")
+        resumePromise.failure(ex)
+        successullStartPromise.tryFailure(ex)
         super.onUpstreamFailure(ex)
+      }
+
+      override def onDownstreamFinish(cause: Throwable): Unit = {
+        if (!resumePromise.isCompleted) resumePromise.trySuccess((Option(resume), false))
+
+        super.onDownstreamFinish(cause)
       }
 
       override protected def onTimer(timerKey: Any): Unit = {
@@ -161,14 +175,13 @@ class GatewayHandlerGraphStage(settings: GatewaySettings, prevResume: Option[Res
               emit(out, Heartbeat(Option(resume).map(_.seq)))
             } else {
               val e = new IllegalStateException("Did not receive HeartbeatACK between heartbeats")
-              fail(out, e)
-              promise.failure(e)
+              failStage(e)
+              resumePromise.failure(e)
+              successullStartPromise.tryFailure(e)
             }
 
-          case Restart(resumable) =>
-            restarting = false
-            promise.success(if (resumable) Some(resume) else None)
-            completeStage()
+          case ReidentifyTimerKey =>
+            identify()
         }
       }
 
@@ -176,84 +189,115 @@ class GatewayHandlerGraphStage(settings: GatewaySettings, prevResume: Option[Res
 
       override def onPull(): Unit = if (!hasBeenPulled(in)) pull(in)
 
-      override def onDownstreamFinish(cause: Throwable): Unit = {
-        if (!restarting) {
-          if (!promise.isCompleted) {
-            promise.success(Option(resume))
-          }
-
-          super.onDownstreamFinish(cause)
-        }
+      override def postStop(): Unit = {
+        val e = new AbruptStageTerminationException(this)
+        if (!resumePromise.isCompleted) resumePromise.tryFailure(e)
+        if (!successullStartPromise.isCompleted) successullStartPromise.tryFailure(e)
       }
 
       setHandler(out, this)
-      setHandler(dispatchOut, this)
     }
 
-    (logic, promise.future)
+    (logic, (resumePromise.future, successullStartPromise.future))
   }
 }
 object GatewayHandlerGraphStage {
-  private case class Restart(resumable: Boolean)
 
   def flow(wsUri: Uri, settings: GatewaySettings, prevResume: Option[ResumeData])(
       implicit system: ActorSystem[Nothing]
-  ): Flow[GatewayMessage[_], GatewayMessage[_], (Future[WebSocketUpgradeResponse], Future[Option[ResumeData]])] = {
+  ): Flow[GatewayMessage[_], GatewayMessage[
+    _
+  ], (Future[WebSocketUpgradeResponse], Future[(Option[ResumeData], Boolean)], Future[Unit])] = {
     val msgFlow =
       createMessage
         .viaMat(wsFlow(wsUri))(Keep.right)
-        .viaMat(parseMessage)(Keep.left)
+        .viaMat(parseMessage(settings.compress))(Keep.left)
         .collect {
           case Right(msg) => msg
           case Left(e)    => throw new GatewayJsonException(e.show, e)
         }
         .named("GatewayMessageProcessing")
 
-    val wsGraphStage = new GatewayHandlerGraphStage(settings, prevResume).named("GatewayLogic")
+    val gatewayLifecycle = new GatewayHandlerGraphStage(settings, prevResume).named("GatewayLogic")
 
-    val graph = GraphDSL.create(msgFlow, wsGraphStage)(Keep.both) {
-      implicit builder => (msgFlowShape, wsHandlerShape) =>
+    val graph = GraphDSL.create(msgFlow, gatewayLifecycle)(Keep.both) {
+      implicit builder => (network, gatewayLifecycle) =>
         import GraphDSL.Implicits._
 
-        val wsMessages = builder.add(Merge[GatewayMessage[_]](2, eagerComplete = true))
-
-        //TODO: Make overflow strategy configurable
-        val buffer = builder.add(Flow[GatewayMessage[_]].buffer(32, OverflowStrategy.dropHead))
+        val sendMessages     = builder.add(Merge[GatewayMessage[_]](2, eagerComplete = true))
+        val receivedMessages = builder.add(Broadcast[GatewayMessage[_]](2, eagerCancel = true))
 
         // format: OFF
-
-        msgFlowShape.out ~> buffer ~> wsHandlerShape.in
-                                      wsHandlerShape.out0 ~> wsMessages.in(1)
-        msgFlowShape.in                                   <~ wsMessages.out
-
+        network ~> receivedMessages
+                   receivedMessages ~> gatewayLifecycle ~> sendMessages
+        network                                         <~ sendMessages
         // format: ON
 
-        FlowShape(wsMessages.in(0), wsHandlerShape.out1)
+        FlowShape(sendMessages.in(1), receivedMessages.out(1))
     }
 
-    Flow.fromGraph(graph)
+    Flow.fromGraph(graph).mapMaterializedValue(t => (t._1, t._2._1, t._2._2))
   }
 
   /**
     * Turn a websocket [[akka.http.scaladsl.model.ws.Message]] into a [[GatewayMessage]].
     */
-  def parseMessage(
+  def parseMessage(compress: Compress)(
       implicit system: ActorSystem[Nothing]
   ): Flow[Message, Either[circe.Error, GatewayMessage[_]], NotUsed] = {
-    val jsonFlow = Flow[Message]
-      .collect {
-        case t: TextMessage => t.textStream
-        case b: BinaryMessage =>
-          b.dataStream
-            .fold(ByteString.empty)(_ ++ _)
-            .via(Compression.inflate())
-            .map(_.utf8String)
-      }
-      .flatMapConcat(_.fold("")(_ + _))
+    val stringFlow = compress match {
+      case Compress.NoCompress =>
+        Flow[Message]
+          .collect {
+            case t: TextMessage   => t.textStream
+            case b: BinaryMessage => b.dataStream.fold(ByteString.empty)(_ ++ _).map(_.utf8String)
+          }
+          .flatMapConcat(_.fold("")(_ + _))
+      case Compress.PerMessageCompress =>
+        Flow[Message]
+          .collect {
+            case t: TextMessage => t.textStream
+            case b: BinaryMessage =>
+              b.dataStream.fold(ByteString.empty)(_ ++ _).via(Compression.inflate()).map(_.utf8String)
+          }
+          .flatMapConcat(_.fold("")(_ + _))
+      case Compress.ZLibStreamCompress =>
+        val graph = GraphDSL.create() { implicit builder =>
+          import GraphDSL.Implicits._
+
+          val in = builder.add(Flow[Message])
+          val splitBinary = builder.add(
+            Partition[Message](
+              2,
+              {
+                case _: TextMessage   => 0
+                case _: BinaryMessage => 1
+              }
+            )
+          )
+          val splitBinaryText   = splitBinary.out(0).map(_.asInstanceOf[TextMessage])
+          val splitBinaryBinary = splitBinary.out(1).map(_.asInstanceOf[BinaryMessage])
+          val allStrings        = builder.add(Merge[String](2))
+
+          val unwrapText = Flow[TextMessage].flatMapConcat(_.textStream.fold("")(_ + _))
+
+          // format: OFF
+          in ~> splitBinary
+                splitBinaryText   ~> unwrapText   ~> allStrings
+                splitBinaryBinary.flatMapConcat(_.dataStream) ~> Compression.inflate().map(_.utf8String) ~> allStrings
+          // format: ON
+
+          FlowShape(in.in, allStrings.out)
+        }
+
+        Flow.fromGraph(graph)
+    }
+
+    implicit val logger: LoggingAdapter = Logging(system.classicSystem, "ackcord.gateway.ReceivedWSMessage")
 
     val withLogging = if (AckCordGatewaySettings().LogReceivedWs) {
-      jsonFlow.log("Received payload").withAttributes(Attributes.logLevels(onElement = Logging.DebugLevel))
-    } else jsonFlow
+      stringFlow.log("Received payload").withAttributes(Attributes.logLevels(onElement = Logging.DebugLevel))
+    } else stringFlow
 
     withLogging.map(parser.parse(_).flatMap(_.as[GatewayMessage[_]]))
   }
@@ -262,6 +306,8 @@ object GatewayHandlerGraphStage {
     * Turn a [[GatewayMessage]] into a websocket [[akka.http.scaladsl.model.ws.Message]].
     */
   def createMessage(implicit system: ActorSystem[Nothing]): Flow[GatewayMessage[_], Message, NotUsed] = {
+    implicit val logger: LoggingAdapter = Logging(system.classicSystem, "ackcord.gateway.SentWSMessage")
+
     val flow = Flow[GatewayMessage[_]].map {
       case msg: GatewayMessage[d] =>
         msg match {

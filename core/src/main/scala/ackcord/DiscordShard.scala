@@ -27,8 +27,7 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.{Failure, Success}
 
-import ackcord.cachehandlers.CacheTypeRegistry
-import ackcord.gateway.{GatewayEvent, GatewayHandler}
+import ackcord.gateway.GatewayHandler
 import ackcord.requests.{RequestStreams, Routes}
 import akka.Done
 import akka.actor.typed._
@@ -117,7 +116,7 @@ object DiscordShard {
           "GatewayHandler"
         )
         newGatewayHandler ! GatewayLogin
-        context.watchWith(gatewayHandler, GatewayHandlerTerminated)
+        context.watchWith(newGatewayHandler, GatewayHandlerTerminated)
         shard(parameters, state.copy(gatewayHandler = newGatewayHandler))
 
       case RestartShard =>

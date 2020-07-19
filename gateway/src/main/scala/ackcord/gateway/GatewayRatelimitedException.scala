@@ -21,30 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-package ackcord.commands
 
-import scala.concurrent.Future
+package ackcord.gateway
 
-import akka.Done
-import akka.stream.scaladsl.{Keep, RunnableGraph, Sink, Source}
-import akka.stream.{KillSwitches, UniqueKillSwitch}
-
-case class CommandRegistration[Mat](
-    materialized: Mat,
-    onDone: Future[Done],
-    killSwitch: UniqueKillSwitch
-) {
-
-  def stop(): Unit = killSwitch.shutdown()
-}
-object CommandRegistration {
-  def toSink[A, M](source: Source[A, M]): RunnableGraph[CommandRegistration[M]] =
-    source.viaMat(KillSwitches.single)(Keep.both).toMat(Sink.ignore) {
-      case ((m, killSwitch), done) => CommandRegistration(m, done, killSwitch)
-    }
-
-  def withRegistration[A, M](source: Source[A, M]): Source[A, CommandRegistration[M]] =
-    source.viaMat(KillSwitches.single)(Keep.both).watchTermination() {
-      case ((m, killSwitch), done) => CommandRegistration(m, done, killSwitch)
-    }
-}
+class GatewayRatelimitedException(cause: Throwable)
+    extends Exception("Be careful about the amount of payloads you send to the gateway", cause)

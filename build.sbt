@@ -4,7 +4,7 @@ lazy val akkaVersion     = "2.6.8"
 //lazy val akkaHttpVersion = "10.1.11"
 lazy val akkaHttpVersion = "10.1.12"
 lazy val circeVersion    = "0.13.0"
-lazy val ackCordVersion  = "0.17.0-SNAPSHOT"
+lazy val ackCordVersion  = "0.17.0-M1"
 
 lazy val commonSettings = Seq(
   scalaVersion := "2.13.3",
@@ -124,17 +124,6 @@ lazy val voice = project
   )
   .dependsOn(dataJVM)
 
-lazy val commandsOld = project
-  .settings(
-    commonSettings,
-    publishSettings,
-    name := "commands-old",
-    version := ackCordVersion,
-    libraryDependencies += "org.typelevel" %% "cats-mtl-core" % "0.7.1",
-    description := "ackCord-commands-old provides the legacy command framework for AckCord"
-  )
-  .dependsOn(requests)
-
 lazy val commands = project
   .settings(
     commonSettings,
@@ -160,16 +149,6 @@ lazy val core = project
     description := "AckCord is a Scala library using Akka for the Discord API giving as much freedom as possible to the user"
   )
   .dependsOn(requests, gateway)
-
-lazy val commandsOldCore = project
-  .settings(
-    commonSettings,
-    publishSettings,
-    name := "commands-old-core",
-    version := ackCordVersion,
-    description := "ackCord-commands-old-core provides the glue code between ackcord-core and ackcord-commands-old"
-  )
-  .dependsOn(core, commandsOld)
 
 lazy val lavaplayerCore = project
   .settings(
@@ -207,7 +186,7 @@ lazy val exampleCore = project
     libraryDependencies += "com.typesafe.akka" %% "akka-slf4j"      % akkaVersion,
     libraryDependencies += "ch.qos.logback"     % "logback-classic" % "1.2.3"
   )
-  .dependsOn(core, commandsOldCore, lavaplayerCore, commands)
+  .dependsOn(core, lavaplayerCore, commands)
 
 lazy val example = project
   .settings(
@@ -244,9 +223,7 @@ lazy val docs = project
       requests,
       gateway,
       voice,
-      commandsOld,
       core,
-      commandsOldCore,
       commands,
       lavaplayerCore,
       ackCord
@@ -275,9 +252,7 @@ lazy val ackCordRoot = project
     requests,
     gateway,
     voice,
-    commandsOld,
     core,
-    commandsOldCore,
     commands,
     lavaplayerCore,
     ackCord,
