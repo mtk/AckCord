@@ -1,8 +1,8 @@
 import sbtcrossproject.CrossPlugin.autoImport.{CrossType, crossProject}
 
-lazy val akkaVersion     = "2.6.8"
+lazy val akkaVersion     = "2.6.9"
 //lazy val akkaHttpVersion = "10.1.11"
-lazy val akkaHttpVersion = "10.1.12"
+lazy val akkaHttpVersion = "10.2.0"
 lazy val circeVersion    = "0.13.0"
 lazy val ackCordVersion  = "0.17.0-M1"
 
@@ -144,7 +144,7 @@ lazy val core = project
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test,
       //      "org.scalatest"     %% "scalatest"    % "3.1.1"     % Test
-      "org.scalatest"     %% "scalatest"    % "3.2.0"     % Test      
+      "org.scalatest"     %% "scalatest"    % "3.2.2"     % Test      
     ),
     description := "AckCord is a Scala library using Akka for the Discord API giving as much freedom as possible to the user"
   )
