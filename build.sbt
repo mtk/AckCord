@@ -1,13 +1,13 @@
 import sbtcrossproject.CrossPlugin.autoImport.{CrossType, crossProject}
 
-lazy val akkaVersion     = "2.6.10"
+lazy val akkaVersion     = "2.6.12"
 //lazy val akkaHttpVersion = "10.1.11"
-lazy val akkaHttpVersion = "10.2.1"
+lazy val akkaHttpVersion = "10.2.3"
 lazy val circeVersion    = "0.13.0"
 lazy val ackCordVersion  = "0.17.0-M1"
 
 lazy val commonSettings = Seq(
-  scalaVersion := "2.13.3",
+  scalaVersion := "2.13.4",
   crossScalaVersions := Seq("2.12.10", scalaVersion.value),
   organization := "net.katsstuff",
   scalacOptions ++= Seq(
@@ -22,7 +22,7 @@ lazy val commonSettings = Seq(
       Seq("-Yno-adapted-args", "-Ywarn-unused-import", "-Ypartial-unification", "-language:higherKinds")
     else Nil
   ),
-  libraryDependencies += compilerPlugin("org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full),
+  libraryDependencies += compilerPlugin("org.typelevel" %% "kind-projector" % "0.11.3" cross CrossVersion.full),
   publishTo := sonatypePublishToBundle.value
 )
 
@@ -61,7 +61,7 @@ lazy val data = crossProject(JSPlatform, JVMPlatform)
       "io.circe" %%% "circe-parser"         % circeVersion,
       "io.circe" %%% "circe-generic-extras" % circeVersion,
       //      "io.circe" %%% "circe-derivation"     % "0.13.0-M2"
-      "io.circe" %%% "circe-derivation"     % "0.13.0-M4"      
+      "io.circe" %%% "circe-derivation"     % "0.13.0-M5"      
     ),
     libraryDependencies ++= Seq(
       //      "com.beachape" %%% "enumeratum"       % "1.5.15",
@@ -144,7 +144,7 @@ lazy val core = project
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test,
       //      "org.scalatest"     %% "scalatest"    % "3.1.1"     % Test
-      "org.scalatest"     %% "scalatest"    % "3.2.2"     % Test      
+      "org.scalatest"     %% "scalatest"    % "3.2.4"     % Test      
     ),
     description := "AckCord is a Scala library using Akka for the Discord API giving as much freedom as possible to the user"
   )
@@ -158,7 +158,7 @@ lazy val lavaplayerCore = project
     version := ackCordVersion,
     resolvers += Resolver.JCenterRepository,
     //    libraryDependencies += "com.sedmelluq" % "lavaplayer" % "1.3.47",
-    libraryDependencies += "com.sedmelluq" % "lavaplayer" % "1.3.50",    
+    libraryDependencies += "com.sedmelluq" % "lavaplayer" % "1.3.71",    
     description := "ackCord-lavaplayer-core provides the glue code between ackcord-core and ackcord-lavaplayer"
   )
   .dependsOn(core, voice)
