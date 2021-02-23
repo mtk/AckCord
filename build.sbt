@@ -144,7 +144,7 @@ lazy val core = project
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test,
       //      "org.scalatest"     %% "scalatest"    % "3.1.1"     % Test
-      "org.scalatest"     %% "scalatest"    % "3.2.4"     % Test      
+      "org.scalatest"     %% "scalatest"    % "3.2.5"     % Test      
     ),
     description := "AckCord is a Scala library using Akka for the Discord API giving as much freedom as possible to the user"
   )
